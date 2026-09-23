@@ -487,6 +487,11 @@ function objectDirectoryOf(shadow: ShadowRepo): string {
  * to lie outside the repository: a data directory configured inside a checkout
  * would otherwise put the shadow there, and "nothing is written in the user's
  * repository" is the property this capability exists to give.
+ *
+ * Neither check tells one repository's shadow from another's, and a handle
+ * marked `shadow` that names some other repository passes both. Handles are
+ * minted by `ensureShadow` alone, so that is a caller bug rather than an
+ * attack; the check guards against a handle mangled in transit, not forged.
  */
 function objectStoreProblem(repo: AnyRepo, objectStore: ShadowRepo): string | null {
   if ((objectStore as { kind: string }).kind !== 'shadow') {
