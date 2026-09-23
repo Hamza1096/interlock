@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, normalize, sep } from 'node:path';
-import { InterlockError, notImplemented } from '@interlock/shared';
+import { InterlockError } from '@interlock/shared';
 import { assertObjectId, runRequired } from './repo-handle.js';
 import type { GitRunner, ShadowRepo, UserRepo } from './repo-handle.js';
 import { parseStatus } from './status.js';
@@ -366,22 +366,118 @@ export function* chunkPaths(paths: readonly string[]): Generator<string[]> {
 }
 
 /**
+ * The result of committing a dirty-state snapshot into the shadow clone.
+ *
+ * `treeOid` is the content identity — it is the key the scheduler uses for
+ * deduplication. The same worktree state committed twice at different times
+ * produces two different `commitSha` values but one `treeOid`, so the
+ * scheduler must key on `treeOid`, not `commitSha`.
+ *
+ * `commitSha` is the object the speculative merger takes as an argument.
+ * It always refers to a commit inside the shadow, never the user repo.
+ */
+export interface SnapshotCommit {
+  /** Tree OID from `captureDirtyState` — content identity used for scheduling. */
+  readonly treeOid: string;
+  /** Commit SHA inside the shadow — the input to `speculativeMerge`. */
+  readonly commitSha: string;
+  /**
+   * True when the snapshot tree matched the branch HEAD exactly.
+   * No new commit was created; `commitSha` is the HEAD commit itself.
+   * Lets the scheduler detect that a worktree has not changed without
+   * comparing tree OIDs independently.
+   */
+  readonly wasClean: boolean;
+}
+
+/**
  * Materialise a snapshot as a commit **in the shadow repo only**, so the
  * speculative merge has two real commits to work with.
  *
- * Where the object-lifetime problem gets settled. A capture writes its tree
- * into the user's object database, where nothing references it, so `git gc
- * --prune=now` can collect it between the capture and the merge that needs it.
- * The base-tree fallback covers the next capture and not this: by then the
- * objects are simply gone. Transferring them into the shadow promptly is what
- * removes the window, and a missing object at merge time is retryable — take
- * the snapshot again — rather than an infrastructure failure, which is a
- * constraint on how the store records one.
+ * Object-visibility design: snapshot trees are written into the user's object
+ * database by `captureDirtyState` and are unreferenced there, so `git gc
+ * --prune=now` can delete them between capture and merge. This function
+ * verifies the tree is still reachable before committing it and surfaces a
+ * missing tree as `OBJECT_NOT_FOUND` — a typed, retryable error. The caller
+ * answers by re-running `captureDirtyState`. An alternative (writing the tree
+ * directly into the shadow's object store) would require modifying
+ * `captureDirtyState`, the most load-bearing function in the codebase.
+ *
+ * A clean snapshot (tree OID matches the branch HEAD's tree) returns the HEAD
+ * commit directly without running `commit-tree`, because creating a new commit
+ * for identical content would mislead the scheduler's change-detection logic.
+ *
+ * @param shadow  The shadow clone to commit into. Never the user repo.
+ * @param snapshotTreeOid  A tree OID produced by `captureDirtyState`.
+ * @param branchRef  The ref whose HEAD becomes the parent, e.g.
+ *        `refs/remotes/user/main`. Pass the empty string for an unborn branch.
+ * @param options.runner  The git runner for this operation.
  */
-export function commitSnapshotInShadow(
-  _shadow: ShadowRepo,
-  _snapshotTreeSha: string,
-  _options: { readonly runner: GitRunner },
-): Promise<string> {
-  return notImplemented('commitSnapshotInShadow');
+export async function commitSnapshotInShadow(
+  shadow: ShadowRepo,
+  snapshotTreeOid: string,
+  branchRef: string,
+  options: { readonly runner: GitRunner },
+): Promise<SnapshotCommit> {
+  const { runner } = options;
+
+  assertObjectId(snapshotTreeOid, 'snapshotTreeOid');
+
+  // Resolve the branch HEAD, if one exists.
+  const headResult =
+    branchRef === ''
+      ? null
+      : await runner.run(shadow, ['rev-parse', '--verify', '--quiet', branchRef]);
+  const headCommit =
+    headResult !== null && headResult.exitCode === 0 ? headResult.stdout.trim() || null : null;
+
+  // A clean snapshot means the worktree matches the branch HEAD exactly.
+  // Running commit-tree would create a new commit with identical content,
+  // which would mislead the scheduler into thinking something changed.
+  if (headCommit !== null) {
+    const headTreeResult = await runner.run(shadow, [
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `${headCommit}^{tree}`,
+    ]);
+    if (headTreeResult.exitCode === 0 && headTreeResult.stdout.trim() === snapshotTreeOid) {
+      return { treeOid: snapshotTreeOid, commitSha: headCommit, wasClean: true };
+    }
+  }
+
+  // Verify the tree is reachable in the shadow (via alternates from the user
+  // repo). A user's `git gc` can delete unreferenced objects between the
+  // snapshot and this call — that is the stated failure mode: OBJECT_NOT_FOUND
+  // is retryable by re-snapshotting.
+  const reachable = await runner.run(shadow, ['cat-file', '-e', snapshotTreeOid]);
+  if (reachable.exitCode !== 0) {
+    throw new InterlockError(
+      'GIT_COMMAND_FAILED',
+      'Snapshot tree was collected by gc before it could be committed into the shadow',
+      {
+        details: { treeOid: snapshotTreeOid },
+        remedy: 'Re-run captureDirtyState to produce a fresh snapshot and try again.',
+        infra: true,
+      },
+    );
+  }
+
+  // Build the commit-tree argument list. No parent flag when the branch is
+  // unborn — that produces a root commit, which is correct for a new repo.
+  const args = ['commit-tree', snapshotTreeOid];
+  if (headCommit !== null) {
+    args.push('-p', headCommit);
+  }
+  // The message is synthetic: this commit is never for human review.
+  // It is deterministic given the tree OID so accidental duplicates are obvious
+  // in the shadow's log, but the timestamp still differs so two calls are not
+  // equal objects.
+  args.push('-m', `interlock snapshot ${snapshotTreeOid.slice(0, 12)}`);
+
+  const result = await runRequired(runner, shadow, args);
+  const commitSha = result.stdout.trim();
+  assertObjectId(commitSha, 'commitSha');
+
+  return { treeOid: snapshotTreeOid, commitSha, wasClean: false };
 }
