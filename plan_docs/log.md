@@ -4,6 +4,13 @@ Short entries: done, decided, blocked. Newest first.
 
 ---
 
+## 2026-09-24 — review of the snapshot rework: nothing broken, three taken
+
+- **The alternates chain holds, and is now pinned.** A user repository that itself borrows its objects — `clone --shared` or `--reference`, holding no history of its own — makes every read go shadow → user store → upstream. Checked through the real code before anything else, with the user's alternates written absolute and then relative: parents correct, the user's store at zero objects throughout, the snapshot in the shadow. git resolves a relative link against the store holding the file, not the one asking. The test pins that assumption rather than a branch of this code, the way the git-version tests do.
+- **`resolveTree` became `resolveObject`.** Its doc had already been widened to cover the commit it now also resolves; the name had not.
+- **The object-store check says what it does not guard.** A handle marked `shadow` that names another repository passes both the kind and the containment check; handles come from `ensureShadow` alone, so that is a caller bug, and the check is for a handle mangled in transit rather than forged. One clause.
+- **Not taken, with the reviewer:** the extra `cat-file` on the clean path is justified as written; concurrent `commit-tree` calls in one shadow are append-only and safe by construction; the daemon's captures are already a constraint on the Scheduler task.
+
 ## 2026-09-23 — snapshot commits, reworked on the same branch
 
 - **The first implementation parented every snapshot in the untouched cycle on nothing, and no test could see it.** The parent was looked up by ref name in the shadow and a failed lookup was read as "unborn"; the cycle passed `refs/heads/<branch>`, which the shadow does not have — user branches live at `refs/remotes/user/*` — so every commit it made was a root commit. A lookup that cannot fail loudly is the same shape as returning an empty result for a missing implementation.
