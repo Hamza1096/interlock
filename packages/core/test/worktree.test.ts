@@ -13,9 +13,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import type { RepoId } from '@interlock/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitRunner } from '../src/git/repo-handle.js';
 import type { GitResult, GitRunner, UserRepo } from '../src/git/repo-handle.js';
+import { ensureShadow } from '../src/git/shadow.js';
 import { captureDirtyState, chunkPaths, MAX_PATHSPEC_BYTES } from '../src/git/worktree.js';
 import { rejection } from './support/rejection.js';
 
@@ -674,6 +676,98 @@ describe('captureDirtyState', () => {
       } finally {
         rmSync(tempDir, { recursive: true, force: true });
       }
+    });
+  });
+  describe('the commit it was taken against', () => {
+    it('records the commit HEAD named', async () => {
+      writeFileSync(join(dir, 'tracked.txt'), 'modified\n');
+
+      const snapshot = await captureDirtyState(dir, repo, { runner });
+
+      expect(snapshot.headSha).toBe(git('rev-parse', 'HEAD').trim());
+    });
+
+    it('records a detached HEAD by its commit, since there is no branch to name', async () => {
+      const head = git('rev-parse', 'HEAD').trim();
+      git('checkout', '-q', '--detach');
+      writeFileSync(join(dir, 'tracked.txt'), 'modified\n');
+
+      const snapshot = await captureDirtyState(dir, repo, { runner });
+
+      expect(snapshot.headSha).toBe(head);
+    });
+
+    it('records nothing where HEAD is unborn', async () => {
+      const fresh = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-unborn-')));
+      try {
+        execFileSync('git', ['init', '-q', '-b', 'main', fresh], { stdio: 'pipe' });
+        writeFileSync(join(fresh, 'a.txt'), 'a\n');
+        const unborn: UserRepo = { kind: 'user', rootPath: fresh, gitDir: join(fresh, '.git') };
+
+        const snapshot = await captureDirtyState(fresh, unborn, { runner });
+
+        expect(snapshot.headSha).toBeNull();
+        expect(snapshot.clean).toBe(false);
+      } finally {
+        rmSync(fresh, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('captured into a shadow', () => {
+    let dataDir: string;
+
+    /** Every object file under the user's git directory, loose and packed. */
+    const userObjects = (): string[] =>
+      execFileSync('find', [join(dir, '.git', 'objects'), '-type', 'f'], { encoding: 'utf8' })
+        .split('\n')
+        .filter(Boolean)
+        .sort();
+
+    beforeEach(() => {
+      // Outside the repository: a shadow inside it is refused, and rightly.
+      dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-wt-data-')));
+      git('config', 'maintenance.auto', 'false');
+      git('config', 'gc.auto', '0');
+    });
+
+    afterEach(() => {
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('writes nothing under the user git directory, not even objects', async () => {
+      const shadow = await ensureShadow(repo, { runner, dataDir, repoId: 'R' as RepoId });
+      writeFileSync(join(dir, 'tracked.txt'), 'modified\n');
+      writeFileSync(join(dir, 'untracked.txt'), 'new\n');
+      const before = userObjects();
+
+      const whole = await leavingUserStateIntact(() =>
+        captureDirtyState(dir, repo, { runner, objectStore: shadow }),
+      );
+      // A scoped capture reads its base back, so the base has to be readable
+      // from where the whole-tree capture put it.
+      writeFileSync(join(dir, 'tracked.txt'), 'modified again\n');
+      const scoped = await leavingUserStateIntact(() =>
+        captureDirtyState(dir, repo, {
+          runner,
+          objectStore: shadow,
+          scope: { kind: 'scoped', paths: ['tracked.txt'], baseTreeOid: whole.treeOid },
+        }),
+      );
+
+      expect(scoped.takenAs).toBe('scoped');
+      expect(userObjects()).toEqual(before);
+      expect(git('-C', shadow.rootPath, 'cat-file', '-t', scoped.treeOid).trim()).toBe('tree');
+    });
+
+    it('keeps the tree out of reach of the user gc', async () => {
+      const shadow = await ensureShadow(repo, { runner, dataDir, repoId: 'R' as RepoId });
+      writeFileSync(join(dir, 'untracked.txt'), 'new\n');
+
+      const snapshot = await captureDirtyState(dir, repo, { runner, objectStore: shadow });
+      git('gc', '-q', '--prune=now');
+
+      expect(git('-C', shadow.rootPath, 'cat-file', '-t', snapshot.treeOid).trim()).toBe('tree');
     });
   });
 });
