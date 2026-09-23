@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { RepoId } from '@interlock/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureDirtyState, commitSnapshotInShadow, createGitRunner } from '../src/index.js';
@@ -245,6 +245,39 @@ describe('commitSnapshotInShadow', () => {
       const error = await rejection(commitSnapshotInShadow(shadow, tampered, { runner }));
       expect(error.code).toBe('GIT_COMMAND_REFUSED');
     }
+  });
+
+  it('reads through a user repository that itself borrows its objects', async () => {
+    // A `clone --shared` holds no history of its own, so reading `HEAD` goes
+    // shadow → user store → upstream. The link written relative, the form git
+    // resolves against the store holding the file rather than the one asking.
+    const upstream = join(base, 'upstream');
+    initRepo(upstream);
+    commitFile(upstream, 'shared.ts', 'export const value = 1;\n', 'one');
+    const borrower = join(base, 'borrower');
+    execFileSync('git', ['clone', '-q', '--shared', upstream, borrower], { stdio: 'pipe' });
+    writeFileSync(
+      join(borrower, '.git', 'objects', 'info', 'alternates'),
+      `${relative(join(borrower, '.git', 'objects'), join(upstream, '.git', 'objects'))}\n`,
+    );
+    const borrowing: UserRepo = {
+      kind: 'user',
+      rootPath: borrower,
+      gitDir: join(borrower, '.git'),
+    };
+    const chained = await ensureShadow(borrowing, {
+      runner,
+      dataDir,
+      repoId: '01JBQ0000000000000000CHAN' as RepoId,
+    });
+    writeFileSync(join(borrower, 'shared.ts'), 'export const value = 2;\n');
+
+    const snapshot = await captureDirtyState(borrower, borrowing, { runner, objectStore: chained });
+    const result = await commitSnapshotInShadow(chained, snapshot, { runner });
+
+    expect(gitIn(chained.rootPath, 'log', '-1', '--format=%P', result.commitSha).trim()).toBe(
+      gitIn(borrower, 'rev-parse', 'HEAD').trim(),
+    );
   });
 
   describe('an object the shadow cannot read', () => {
