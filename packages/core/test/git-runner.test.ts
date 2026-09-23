@@ -546,14 +546,26 @@ describe('git runner against a real repository', () => {
 
     it('refuses a handle that only claims to be a shadow', async () => {
       // A handle can arrive through `JSON.parse`, and the type does not survive
-      // one. A user repository here would write straight into itself.
-      const impostor = { ...repo, originPath: dir } as unknown as ShadowRepo;
+      // one. Another user's repository, so the containment check has nothing to
+      // object to: only the kind stands between this and a write into it.
+      const other = mkdtempSync(join(tmpdir(), 'interlock-other-'));
+      execFileSync('git', ['init', '-q', other], { stdio: 'pipe' });
+      const impostor = {
+        kind: 'user',
+        rootPath: other,
+        gitDir: join(other, '.git'),
+        originPath: dir,
+      } as unknown as ShadowRepo;
 
-      const error = await rejection(
-        runner.run(repo, ['hash-object', '-w', '--', 'a.txt'], { objectStore: impostor }),
-      );
-
-      expect(error.code).toBe('GIT_COMMAND_REFUSED');
+      try {
+        const error = await rejection(
+          runner.run(repo, ['hash-object', '-w', '--', 'a.txt'], { objectStore: impostor }),
+        );
+        expect(error.code).toBe('GIT_COMMAND_REFUSED');
+        expect(error.message).toContain('must be a shadow');
+      } finally {
+        rmSync(other, { recursive: true, force: true });
+      }
     });
 
     it('refuses a store that sits inside the repository', async () => {

@@ -697,6 +697,32 @@ describe('captureDirtyState', () => {
       expect(snapshot.headSha).toBe(head);
     });
 
+    it('reads the head tree off that commit, so a commit mid-capture cannot make it look clean', async () => {
+      const head = git('rev-parse', 'HEAD').trim();
+      writeFileSync(join(dir, 'tracked.txt'), 'modified\n');
+      // The user commits exactly the uncommitted work the instant after the
+      // capture has read HEAD. Read off HEAD a second time, the tree would be the
+      // new commit's, match the worktree, and call a snapshot of the old commit
+      // clean — so a clean snapshot would name a commit with a different tree.
+      let moved = false;
+      const racing: GitRunner = {
+        run: async (target, args, options) => {
+          const result = await runner.run(target, args, options);
+          if (!moved && args.includes('HEAD^{commit}')) {
+            moved = true;
+            git('commit', '-qam', 'the uncommitted work, committed');
+          }
+          return result;
+        },
+      };
+
+      const snapshot = await captureDirtyState(dir, repo, { runner: racing });
+
+      expect(moved).toBe(true);
+      expect(snapshot.headSha).toBe(head);
+      expect(snapshot.clean).toBe(false);
+    });
+
     it('records nothing where HEAD is unborn', async () => {
       const fresh = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-unborn-')));
       try {

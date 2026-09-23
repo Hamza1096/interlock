@@ -232,6 +232,21 @@ describe('commitSnapshotInShadow', () => {
     expect(paths).toEqual(expect.arrayContaining([...hostile, 'shared.ts']));
   });
 
+  it('refuses ids that are not object ids before git reads one as an option', async () => {
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+    const snapshot = await capture();
+
+    // They come back from storage, so their shape is an assumption. A flag
+    // arriving where an id is expected is read by git as a flag.
+    for (const tampered of [
+      { ...snapshot, treeOid: '--output=/tmp/x' },
+      { ...snapshot, headSha: '--output=/tmp/x' },
+    ]) {
+      const error = await rejection(commitSnapshotInShadow(shadow, tampered, { runner }));
+      expect(error.code).toBe('GIT_COMMAND_REFUSED');
+    }
+  });
+
   describe('an object the shadow cannot read', () => {
     it('is a stale snapshot when the shadow was rebuilt since the capture', async () => {
       writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
@@ -259,6 +274,25 @@ describe('commitSnapshotInShadow', () => {
         commitSnapshotInShadow(shadow, { ...snapshot, headSha: missing }, { runner }),
       );
 
+      expect(error.code).toBe('SNAPSHOT_STALE');
+    });
+
+    it('is a stale snapshot when a clean one names a head the shadow cannot read', async () => {
+      const snapshot = await capture();
+      expect(snapshot.clean).toBe(true);
+
+      const error = await rejection(
+        commitSnapshotInShadow(
+          shadow,
+          { ...snapshot, headSha: 'e'.repeat(snapshot.treeOid.length) },
+          {
+            runner,
+          },
+        ),
+      );
+
+      // The clean path hands back a commit without making one, so it has to
+      // check it can read that commit or a merge fails on it later instead.
       expect(error.code).toBe('SNAPSHOT_STALE');
     });
 
