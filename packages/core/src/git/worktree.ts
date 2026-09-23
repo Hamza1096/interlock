@@ -138,9 +138,9 @@ export async function captureDirtyState(
 
   // The tree is read off the commit rather than off `HEAD` a second time, so
   // the two describe one moment even if the branch moves in between.
-  const headSha = await resolveTree(worktree, runner, 'HEAD^{commit}');
+  const headSha = await resolveObject(worktree, runner, 'HEAD^{commit}');
   const headTree =
-    headSha === null ? null : await resolveTree(worktree, runner, `${headSha}^{tree}`);
+    headSha === null ? null : await resolveObject(worktree, runner, `${headSha}^{tree}`);
   // Stamped when the tree is written rather than when the capture began: it
   // describes what was read, and reading takes time a watcher may care about.
   const asSnapshot = (treeOid: string, takenAs: SnapshotScope['kind']): WorktreeSnapshot => ({
@@ -158,7 +158,7 @@ export async function captureDirtyState(
     // snapshot, not a reason to fail.
     assertObjectId(scope.baseTreeOid, 'baseTreeOid');
     assertInsideWorktree(scope.paths);
-    const base = await resolveTree(worktree, runner, `${scope.baseTreeOid}^{tree}`);
+    const base = await resolveObject(worktree, runner, `${scope.baseTreeOid}^{tree}`);
     if (base !== null) {
       return asSnapshot(await extendTree(worktree, runner, tempDir, base, scope.paths), 'scoped');
     }
@@ -188,7 +188,7 @@ function intoStore(runner: GitRunner, objectStore: ShadowRepo | undefined): GitR
  * is what makes this usable as a test: git's wording for a missing object has
  * changed between versions and matching on it would be a version dependency.
  */
-async function resolveTree(
+async function resolveObject(
   worktree: UserRepo,
   runner: GitRunner,
   revision: string,
