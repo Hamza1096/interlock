@@ -113,7 +113,15 @@ describe('user repositories are never modified', () => {
         });
         expect(scoped.treeOid).toBe(whole.treeOid);
 
-        await commitSnapshotInShadow(shadow, whole.treeOid, branch.ref, { runner });
+        // Into the shadow as well, the way anything merged is captured, and on
+        // to a commit there. Both write; the hasher below is what shows neither
+        // writes here. The same content, so the same tree, whichever store.
+        const intoShadow = await captureDirtyState(branch.worktreePath, handle, {
+          runner,
+          objectStore: shadow,
+        });
+        expect(intoShadow.treeOid).toBe(whole.treeOid);
+        await commitSnapshotInShadow(shadow, intoShadow, { runner });
 
         snapshot = { id: ulid<SnapshotId>(), treeOid: whole.treeOid };
       }

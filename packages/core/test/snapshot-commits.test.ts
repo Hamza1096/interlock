@@ -1,198 +1,277 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoId } from '@interlock/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { captureDirtyState, commitSnapshotInShadow, createGitRunner } from '../src/index.js';
-import type { UserRepo } from '../src/index.js';
+import type { GitResult, GitRunner, ShadowRepo, UserRepo, WorktreeSnapshot } from '../src/index.js';
 import { ensureShadow } from '../src/git/shadow.js';
 import { rejection } from './support/rejection.js';
 
+/**
+ * Uncommitted work turned into commits a merge can take.
+ *
+ * Every snapshot here is captured into the shadow, because that is the only way
+ * one reaches a merge: captured into the user's store instead, its tree is
+ * unreferenced there and their `gc` can reap it from under the commit.
+ */
 describe('commitSnapshotInShadow', () => {
   let base: string;
   let dir: string;
   let dataDir: string;
   let repo: UserRepo;
+  let shadow: ShadowRepo;
   const repoId = '01JBQ0000000000000000REPO' as RepoId;
   const runner = createGitRunner();
 
-  const git = (...args: string[]): string =>
-    execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe', encoding: 'utf8' });
-
   const gitIn = (where: string, ...args: string[]): string =>
     execFileSync('git', ['-C', where, ...args], { stdio: 'pipe', encoding: 'utf8' });
+  const git = (...args: string[]): string => gitIn(dir, ...args);
 
-  const objectCount = (objectsDir: string): number => {
-    const out = execFileSync(
-      'find',
-      [objectsDir, '-type', 'f', '-not', '-path', `${objectsDir}/info/*`],
-      { stdio: 'pipe', encoding: 'utf8' },
-    );
-    return out.split('\n').filter(Boolean).length;
+  const initRepo = (path: string): void => {
+    execFileSync('git', ['init', '-q', '-b', 'main', path], { stdio: 'pipe' });
+    gitIn(path, 'config', 'user.name', 'Interlock Test');
+    gitIn(path, 'config', 'user.email', 'test@example.invalid');
+    // Since git 2.47 `commit` detaches a maintenance process that holds
+    // `objects/maintenance.lock` after the commit returns.
+    gitIn(path, 'config', 'maintenance.auto', 'false');
+    gitIn(path, 'config', 'gc.auto', '0');
   };
 
-  beforeEach(() => {
+  const commitFile = (path: string, name: string, content: string, message: string): void => {
+    writeFileSync(join(path, name), content);
+    gitIn(path, 'add', '-A');
+    gitIn(path, 'commit', '-qm', message);
+  };
+
+  /** A capture of `worktree` into the shadow, the way anything merged is taken. */
+  const capture = (worktree = dir): Promise<WorktreeSnapshot> =>
+    captureDirtyState(worktree, repo, { runner, objectStore: shadow });
+
+  const parentsOf = (commit: string): string[] =>
+    gitIn(shadow.rootPath, 'log', '-1', '--format=%P', commit).trim().split(' ').filter(Boolean);
+
+  const treeOf = (commit: string): string =>
+    gitIn(shadow.rootPath, 'rev-parse', `${commit}^{tree}`).trim();
+
+  /** Wraps the real runner and records every argv it is asked to run. */
+  const recording = (): { runner: GitRunner; calls: string[][] } => {
+    const calls: string[][] = [];
+    return {
+      calls,
+      runner: {
+        run: (target, args, options): Promise<GitResult> => {
+          calls.push([...args]);
+          return runner.run(target, args, options);
+        },
+      },
+    };
+  };
+
+  beforeEach(async () => {
+    // git answers with fully-resolved paths, and on macOS /var is a symlink to
+    // /private/var, so the fixture works in canonical form throughout.
     base = realpathSync(mkdtempSync(join(tmpdir(), 'interlock-snapshot-')));
     dir = join(base, 'user');
     dataDir = join(base, 'data');
-    execFileSync('git', ['init', '-q', '-b', 'main', dir], { stdio: 'pipe' });
-    git('config', 'user.name', 'Interlock Test');
-    git('config', 'user.email', 'test@example.invalid');
-    git('config', 'maintenance.auto', 'false');
-    git('config', 'gc.auto', '0');
-
+    initRepo(dir);
+    commitFile(dir, 'shared.ts', 'export const value = 1;\n', 'one');
     repo = { kind: 'user', rootPath: dir, gitDir: join(dir, '.git') };
+    shadow = await ensureShadow(repo, { runner, dataDir, repoId });
   });
 
   afterEach(() => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('wraps a dirty state tree in a new commit in the shadow', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'one\n');
-    git('add', '-A');
-    git('commit', '-qm', 'one');
+  it('turns two sets of uncommitted edits into commits whose merge conflicts', async () => {
+    git('branch', 'feature');
+    const linked = join(base, 'feature');
+    git('worktree', 'add', '-q', linked, 'feature');
+    const refsBefore = git('for-each-ref', '--format=%(refname) %(objectname)');
 
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
+    // The same line, changed differently on each side, committed on neither.
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+    writeFileSync(join(linked, 'shared.ts'), 'export const value = 3;\n');
+    const ours = await commitSnapshotInShadow(shadow, await capture(dir), { runner });
+    const theirs = await commitSnapshotInShadow(shadow, await capture(linked), { runner });
 
-    writeFileSync(join(dir, 'b.txt'), 'uncommitted\n');
-
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-    const result = await commitSnapshotInShadow(
-      shadow,
-      snapshot.treeOid,
-      'refs/remotes/user/main',
-      { runner },
+    // What the next task builds on: two commit ids `merge-tree` accepts, and
+    // the conflict between them visible before anyone has committed anything.
+    const merge = spawnSync(
+      'git',
+      [
+        '-C',
+        shadow.rootPath,
+        'merge-tree',
+        '--write-tree',
+        '--name-only',
+        ours.commitSha,
+        theirs.commitSha,
+      ],
+      { encoding: 'utf8' },
     );
+    expect(merge.status).toBe(1);
+    expect(merge.stdout).toContain('shared.ts');
+    expect(merge.stdout).toContain('CONFLICT (content)');
+    expect(git('for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore);
+  });
+
+  it('parents the commit on the head the snapshot was taken against', async () => {
+    const head = git('rev-parse', 'HEAD').trim();
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+
+    const snapshot = await capture();
+    const result = await commitSnapshotInShadow(shadow, snapshot, { runner });
 
     expect(result.treeOid).toBe(snapshot.treeOid);
-    expect(result.wasClean).toBe(false);
-
-    const type = gitIn(shadow.rootPath, 'cat-file', '-t', result.commitSha).trim();
-    expect(type).toBe('commit');
-
-    const treeOfCommit = gitIn(shadow.rootPath, 'rev-parse', `${result.commitSha}^{tree}`).trim();
-    expect(treeOfCommit).toBe(snapshot.treeOid);
+    expect(treeOf(result.commitSha)).toBe(snapshot.treeOid);
+    expect(parentsOf(result.commitSha)).toEqual([head]);
   });
 
-  it('returns the branch head directly when the worktree is clean', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'one\n');
-    git('add', '-A');
-    git('commit', '-qm', 'one');
+  it('keeps that parent when the branch moves between the capture and the commit', async () => {
+    const head = git('rev-parse', 'HEAD').trim();
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+    const snapshot = await capture();
 
-    const headCommit = git('rev-parse', 'HEAD').trim();
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
-    const objectsBefore = objectCount(join(shadow.rootPath, 'objects'));
+    // The user commits something else, and the shadow learns of it.
+    commitFile(dir, 'other.ts', 'export const other = 1;\n', 'two');
+    await ensureShadow(repo, { runner, dataDir, repoId });
 
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-    const result = await commitSnapshotInShadow(
-      shadow,
+    const result = await commitSnapshotInShadow(shadow, snapshot, { runner });
+
+    // The tree has no `other.ts`. Parented on the new head, this commit would
+    // claim to delete it — a change nobody made, which a merge would carry.
+    expect(parentsOf(result.commitSha)).toEqual([head]);
+    const changed = gitIn(shadow.rootPath, 'diff', '--name-only', head, result.commitSha).trim();
+    expect(changed).toBe('shared.ts');
+  });
+
+  it('parents a detached HEAD on its commit, since there is no branch to look up', async () => {
+    const head = git('rev-parse', 'HEAD').trim();
+    git('checkout', '-q', '--detach');
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+
+    const result = await commitSnapshotInShadow(shadow, await capture(), { runner });
+
+    expect(parentsOf(result.commitSha)).toEqual([head]);
+  });
+
+  it('makes a root commit where HEAD is unborn', async () => {
+    const fresh = join(base, 'fresh');
+    initRepo(fresh);
+    writeFileSync(join(fresh, 'a.txt'), 'uncommitted\n');
+    const freshRepo: UserRepo = { kind: 'user', rootPath: fresh, gitDir: join(fresh, '.git') };
+    const freshShadow = await ensureShadow(freshRepo, {
+      runner,
+      dataDir,
+      repoId: '01JBQ0000000000000000FRSH' as RepoId,
+    });
+    const snapshot = await captureDirtyState(fresh, freshRepo, {
+      runner,
+      objectStore: freshShadow,
+    });
+
+    const result = await commitSnapshotInShadow(freshShadow, snapshot, { runner });
+
+    expect(gitIn(freshShadow.rootPath, 'log', '-1', '--format=%P', result.commitSha).trim()).toBe(
+      '',
+    );
+    expect(gitIn(freshShadow.rootPath, 'rev-parse', `${result.commitSha}^{tree}`).trim()).toBe(
       snapshot.treeOid,
-      'refs/remotes/user/main',
-      { runner },
     );
-
-    expect(result.wasClean).toBe(true);
-    expect(result.commitSha).toBe(headCommit);
-    expect(result.treeOid).toBe(snapshot.treeOid);
-
-    const objectsAfter = objectCount(join(shadow.rootPath, 'objects'));
-    expect(objectsAfter).toBe(objectsBefore); // No new commits created in shadow
   });
 
-  it('creates a root commit when the branch is unborn', async () => {
-    // Unborn branch, repo just initialized
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
+  it('answers a clean snapshot with the head itself and makes no commit', async () => {
+    const head = git('rev-parse', 'HEAD').trim();
+    const snapshot = await capture();
+    expect(snapshot.clean).toBe(true);
+    const { runner: spy, calls } = recording();
 
-    writeFileSync(join(dir, 'a.txt'), 'uncommitted\n');
+    const result = await commitSnapshotInShadow(shadow, snapshot, { runner: spy });
 
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-    const result = await commitSnapshotInShadow(shadow, snapshot.treeOid, '', { runner });
-
-    expect(result.wasClean).toBe(false);
-
-    // Assert it has no parent
-    const parents = gitIn(shadow.rootPath, 'log', '-1', '--pretty=%P', result.commitSha).trim();
-    expect(parents).toBe('');
+    expect(result).toEqual({ treeOid: snapshot.treeOid, commitSha: head });
+    // A second commit for the same content is a new id for nothing, and every
+    // consumer keying on commits would see a change that did not happen.
+    expect(calls.map((argv) => argv[0])).not.toContain('commit-tree');
   });
 
-  it('throws a typed error if the tree was garbage collected before being committed', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'one\n');
-    git('add', '-A');
-    git('commit', '-qm', 'one');
+  it('gives the same tree the same key however many times it is committed', async () => {
+    writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+    const snapshot = await capture();
 
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
+    const first = await commitSnapshotInShadow(shadow, snapshot, { runner });
+    const second = await commitSnapshotInShadow(shadow, snapshot, { runner });
 
-    writeFileSync(join(dir, 'b.txt'), 'uncommitted\n');
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-
-    // forcefully prune all unreferenced objects from the user's object store
-    git('prune');
-
-    const error = await rejection(
-      commitSnapshotInShadow(shadow, snapshot.treeOid, 'refs/remotes/user/main', { runner }),
-    );
-    expect(error.code).toBe('GIT_COMMAND_FAILED');
-    expect(error.infra).toBe(true);
+    // Whether the commit ids differ depends on whether the clock ticked between
+    // the calls, which is exactly why neither is the key.
+    expect(second.treeOid).toBe(first.treeOid);
+    expect(treeOf(second.commitSha)).toBe(treeOf(first.commitSha));
   });
 
-  it('produces different commit shas for the same tree oid', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'one\n');
-    git('add', '-A');
-    git('commit', '-qm', 'one');
+  it('survives the user collecting garbage between the capture and the commit', async () => {
+    writeFileSync(join(dir, 'untracked.ts'), 'export const u = 1;\n');
+    const snapshot = await capture();
 
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
+    git('gc', '-q', '--prune=now');
+    const result = await commitSnapshotInShadow(shadow, snapshot, { runner });
 
-    writeFileSync(join(dir, 'b.txt'), 'uncommitted\n');
-
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-
-    const result1 = await commitSnapshotInShadow(
-      shadow,
-      snapshot.treeOid,
-      'refs/remotes/user/main',
-      { runner },
-    );
-
-    // Sleep a bit so the timestamps might differ, but git commit-tree also factors in the exact time.
-    // Usually even rapid calls might get the same second, but passing different messages or just the fact we are testing this logic
-    // Actually, if we call it in the exact same second, commit-tree might produce the same sha1.
-    // But since it is synthetic, let's at least test we can call it twice.
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    const result2 = await commitSnapshotInShadow(
-      shadow,
-      snapshot.treeOid,
-      'refs/remotes/user/main',
-      { runner },
-    );
-
-    expect(result1.treeOid).toBe(result2.treeOid);
-    expect(result1.commitSha).not.toBe(result2.commitSha);
+    expect(treeOf(result.commitSha)).toBe(snapshot.treeOid);
   });
 
-  it('handles hostile paths with spaces and newlines', async () => {
-    writeFileSync(join(dir, 'a.txt'), 'one\n');
-    git('add', '-A');
-    git('commit', '-qm', 'one');
+  it('carries hostile paths through to the commit', async () => {
+    const hostile = [':(exclude)a.txt', '-dash.txt', 'with space.txt', 'with\nnewline.txt'];
+    for (const name of hostile) writeFileSync(join(dir, name), `${name}\n`);
 
-    const shadow = await ensureShadow(repo, { runner, dataDir, repoId });
+    const result = await commitSnapshotInShadow(shadow, await capture(), { runner });
 
-    writeFileSync(join(dir, 'file with space.txt'), 'space\n');
-    writeFileSync(join(dir, 'file\nwith\nnewline.txt'), 'newline\n');
+    const paths = gitIn(shadow.rootPath, 'ls-tree', '-z', '--name-only', result.commitSha)
+      .split('\0')
+      .filter(Boolean);
+    expect(paths).toEqual(expect.arrayContaining([...hostile, 'shared.ts']));
+  });
 
-    const snapshot = await captureDirtyState(dir, repo, { runner });
-    const result = await commitSnapshotInShadow(
-      shadow,
-      snapshot.treeOid,
-      'refs/remotes/user/main',
-      { runner },
-    );
+  describe('an object the shadow cannot read', () => {
+    it('is a stale snapshot when the shadow was rebuilt since the capture', async () => {
+      writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+      const snapshot = await capture();
+      // The ordinary way it happens: a rebuild discards everything the shadow
+      // held, including trees captured into it.
+      rmSync(shadow.rootPath, { recursive: true, force: true });
+      shadow = await ensureShadow(repo, { runner, dataDir, repoId });
 
-    const lsTree = gitIn(shadow.rootPath, 'ls-tree', '-z', '--name-only', result.commitSha);
-    const files = lsTree.split('\0').filter(Boolean);
+      const error = await rejection(commitSnapshotInShadow(shadow, snapshot, { runner }));
 
-    expect(files).toContain('file with space.txt');
-    expect(files).toContain('file\nwith\nnewline.txt');
+      // Not infrastructure: nothing is broken, and capturing again is the fix.
+      expect(error.code).toBe('SNAPSHOT_STALE');
+      expect(error.infra).toBe(false);
+      expect(error.remedy).toBeDefined();
+    });
+
+    it('is a stale snapshot when the commit it was taken against is gone', async () => {
+      writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+      const snapshot = await capture();
+      // Well-formed, so it passes the shape check, and in no store at all.
+      const missing = 'e'.repeat(snapshot.treeOid.length);
+
+      const error = await rejection(
+        commitSnapshotInShadow(shadow, { ...snapshot, headSha: missing }, { runner }),
+      );
+
+      expect(error.code).toBe('SNAPSHOT_STALE');
+    });
+
+    it('refuses an object of the wrong kind rather than letting commit-tree fail on it', async () => {
+      writeFileSync(join(dir, 'shared.ts'), 'export const value = 2;\n');
+      const snapshot = await capture();
+      const blob = git('rev-parse', 'HEAD:shared.ts').trim();
+
+      const error = await rejection(
+        commitSnapshotInShadow(shadow, { ...snapshot, treeOid: blob }, { runner }),
+      );
+
+      expect(error.code).toBe('SNAPSHOT_STALE');
+    });
   });
 });
