@@ -101,7 +101,7 @@ Typecheck cost is the budget that decides whether this product runs on a laptop.
   a `ShadowRepo` is the only thing mutating functions accept. Keep it that way —
   the type split is what makes a write to a user repo a compile error.
 
-- [ ] **Snapshot commits**
+- [x] **Snapshot commits**
       **Files:** `packages/core/src/git/worktree.ts`
       **What:** `commitSnapshotInShadow` — turn an M1 dirty-state tree into a real commit inside the shadow, so uncommitted work can be merged.
       **Done when:** a conflict between two sets of uncommitted changes is detectable before either side has committed anything. This is the capability that makes Interlock different from a merge queue.

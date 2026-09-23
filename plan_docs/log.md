@@ -4,6 +4,21 @@ Short entries: done, decided, blocked. Newest first.
 
 ---
 
+## 2026-09-23 — commitSnapshotInShadow: design decisions
+
+- **Chose Option A for object visibility.** Snapshot trees stay in the user's object
+  database (written by captureDirtyState, unreferenced). commitSnapshotInShadow checks
+  reachability first and surfaces a missing tree as GIT_COMMAND_FAILED (infra) — typed, retryable,
+  with a remedy telling the caller to re-snapshot. Option B would require modifying
+  captureDirtyState and the objects/ allowance in user-repo-untouched, which is the
+  most load-bearing constraint in the codebase.
+- **Clean snapshots return the HEAD commit directly.** A tree matching HEAD exactly
+  produces no commit-tree call — wasClean is true and commitSha is the branch head.
+  The scheduler keys on treeOid, not commitSha, so this is safe for deduplication.
+- **No snapshot refs created.** refs/interlock/snapshots/* would require a deletion
+  path and complicate the shadow cleanup logic. The reachability check at commit time
+  handles the GC hazard without adding ref management.
+
 ## 2026-09-22 — the Node watcher bug is documented, and the bug beside it was ours
 
 - **Decided: no workaround for Node's regression.** There are no users to protect, and a process-level `uncaughtException` handler is a permanent shape carried for a temporary upstream bug. Recorded in `README.md` as a version constraint instead, beside `git >= 2.30`, and the milestone task became "remove that paragraph when upstream fixes it".
