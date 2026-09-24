@@ -426,8 +426,10 @@ function buildEnv(
   // The runner clears by name the two it can; the diff drivers have no single
   // key to clear and stay a residual risk, bounded today because `.git/config`
   // is not cloned and so is not attacker-controlled.
-  env.GIT_CONFIG_GLOBAL = devNull;
-  env.GIT_CONFIG_SYSTEM = devNull;
+  const gitDevNull = process.platform === 'win32' ? 'nul' : devNull;
+  // Actually git on Windows understands `nul` as dev null, but `\\.\nul` fails! Wait, `/dev/null` works too. Let's use `nul` or `/dev/null`.
+  env.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? '/dev/null' : devNull;
+  env.GIT_CONFIG_SYSTEM = process.platform === 'win32' ? '/dev/null' : devNull;
   env.GIT_CONFIG_NOSYSTEM = '1';
   // Porcelain output is parsed downstream; locale must not reorder or translate it.
   env.LC_ALL = 'C';

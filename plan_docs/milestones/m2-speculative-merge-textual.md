@@ -141,7 +141,7 @@ Typecheck cost is the budget that decides whether this product runs on a laptop.
 merge-tree` over the two commits reports the conflict — with neither side
   having committed anything, and the user repository byte-identical afterwards.
 
-- [ ] **Pairwise merge with `merge-tree`**
+- [x] **Pairwise merge with `merge-tree`**
       **Files:** `packages/core/src/merge/speculative-merge.ts`
       **What:** merge two commits with `git merge-tree --write-tree` inside the shadow. Returns the merged tree id when clean, and the conflicted paths with their stages when not. No worktree, no checkout.
       **Done when:** a clean pair returns a tree id and a conflicting pair returns its conflicted paths; neither creates a working directory; and the timing per pair is recorded in `log.md`.

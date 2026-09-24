@@ -24,6 +24,7 @@ import {
   mergeBase,
   openUserRepo,
   touchedPaths,
+  speculativeMerge,
 } from '../src/index.js';
 import type { GitRunner, UserRepo } from '../src/index.js';
 import { ensureShadow } from '../src/git/shadow.js';
@@ -148,6 +149,16 @@ describe('user repositories are never modified', () => {
       if (snapshot !== undefined) {
         await extractChangeSet(handle, branch, mergeBaseSha, { runner, snapshot });
       }
+
+      const shadow = await ensureShadow(handle, { runner, dataDir, repoId: repo.id });
+      await speculativeMerge({
+        shadow,
+        commitA: branch.headSha,
+        commitB: mergeBaseSha,
+        mergeBaseSha,
+        runner,
+      });
+
       diffed += 1;
     }
 

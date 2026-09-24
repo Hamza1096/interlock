@@ -2,7 +2,11 @@
 
 Short entries: done, decided, blocked. Newest first.
 
----
+## 2026-09-24 — Pairwise merge with merge-tree
+
+- **Timing per pair:** `git merge-tree --write-tree` completes in ~1100ms for a clean merge and ~1000ms for a conflicting merge in the Windows Vitest harness.
+- **Windows testing constraint:** `speculativeMerge handles newlines in paths` test is skipped on Windows because the OS does not permit `\n` in file names.
+- **Git /dev/null on Windows:** `GIT_CONFIG_GLOBAL` requires `/dev/null` rather than `\\.\nul` because MSYS2 git fails when accessing the Windows null device directly.
 
 ## 2026-09-24 — review of the snapshot rework: nothing broken, three taken
 

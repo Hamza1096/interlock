@@ -27,8 +27,8 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 export interface MergeOutcome {
   readonly clean: boolean;
   readonly conflictedPaths: readonly string[];
-  /** Commit in the shadow repo holding the merged tree; null if the merge failed. */
-  readonly mergedSha: string | null;
+  /** Tree in the shadow repo holding the merged result; null if the merge failed. */
+  readonly mergedTreeOid: string | null;
 }
 
 export const ANALYZER_KINDS = ['textual', 'typecheck', 'build', 'test', 'ast-semantic'] as const;
