@@ -93,7 +93,7 @@ describe('speculativeMerge', () => {
   /** Stands in for the real runner, answering `merge-tree` with a result of the test's choosing. */
   const answering = (fake: Partial<GitResult>): GitRunner => ({
     run: (target, args, options) =>
-      args[0] === 'merge-tree'
+      args.includes('merge-tree')
         ? Promise.resolve({ stdout: '', stderr: '', exitCode: 0, ...fake })
         : runner.run(target, args, options),
   });
@@ -289,6 +289,24 @@ describe('speculativeMerge', () => {
       expect(result.conflictBlocks).toEqual([]);
     });
 
+    it('reads no region from a file the repository marks binary, however textual it is', async () => {
+      // No NUL anywhere: only git's own verdict, carried by the message type,
+      // says this file has no markers in it.
+      const request = await pair(
+        () => {
+          write('.gitattributes', '*.dat binary\n');
+          write('table.dat', 'base\n');
+        },
+        () => write('table.dat', 'one\n'),
+        () => write('table.dat', 'two\n'),
+      );
+
+      const result = await speculativeMerge(request, { runner });
+
+      expect(result.messages.map((m) => m.type)).toContain('CONFLICT (binary)');
+      expect(result.conflictBlocks).toEqual([]);
+    });
+
     it('reports a file against a symlink, moved aside under a name neither branch has', async () => {
       const request = await pair(
         () => write('f', 'file\n'),
@@ -403,6 +421,22 @@ describe('speculativeMerge', () => {
 
       expect(error.code).toBe('TOOLCHAIN_UNSUPPORTED');
       expect(error.infra).toBe(true);
+    });
+
+    it('reports how long the call took', async () => {
+      const valid = await request();
+      const slow: GitRunner = {
+        run: async (target, args, options) => {
+          if (args.includes('merge-tree')) await new Promise((resolve) => setTimeout(resolve, 40));
+          return runner.run(target, args, options);
+        },
+      };
+
+      const result = await speculativeMerge(valid, { runner: slow });
+
+      // The timing is part of what this returns — the scheduler budgets on it —
+      // so it has to measure the call rather than merely be a number.
+      expect(result.durationMs).toBeGreaterThanOrEqual(40);
     });
 
     it('keeps git stderr, which is repository content, out of the error', async () => {

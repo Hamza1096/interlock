@@ -103,8 +103,9 @@ const EXIT_CONFLICTED = 1;
 /**
  * git's answer to a form it does not understand.
  *
- * This is the capability check. `--merge-base` arrived in git 2.40, and 2.38 and
- * 2.39 accept `--write-tree` while refusing it — so a probe for the subcommand,
+ * This is the capability check. `--merge-base` arrived in git 2.40 and
+ * `--attr-source` in 2.41, and 2.38 accepts `--write-tree` while refusing both —
+ * so a probe for the subcommand,
  * or for `--write-tree`, passes on a git that cannot run this merge. Asking the
  * merge itself costs nothing on a git that works, and the argv is Interlock's
  * own and checked, so a usage error here has no other cause.
@@ -125,7 +126,7 @@ const MIN_MARKER_LENGTH = 7;
  * Merge `commitB` into `commitA` in the shadow's object database.
  *
  * A conflict is a result, not an error. This throws only when the merge could
- * not be attempted: `TOOLCHAIN_UNSUPPORTED` for a git older than 2.40,
+ * not be attempted: `TOOLCHAIN_UNSUPPORTED` for a git older than 2.41,
  * `SNAPSHOT_STALE` when one of the three commits is not in the shadow — most
  * often a snapshot whose shadow was rebuilt — and `MERGE_FAILED` otherwise.
  */
@@ -143,6 +144,12 @@ export async function speculativeMerge(
 
   const startedAt = Date.now();
   const result = await runner.run(shadow, [
+    // A bare clone has no worktree to read `.gitattributes` from, so without
+    // this every attribute that shapes a merge — `binary`, the `union` driver,
+    // `conflict-marker-size` — is silently ignored, and a pair conflicts here
+    // that merges cleanly for real, or the other way about. Read from
+    // `commitA`, as a `git merge` run in A's checkout would.
+    `--attr-source=${commitA}`,
     'merge-tree',
     '--write-tree',
     '-z',
@@ -154,7 +161,7 @@ export async function speculativeMerge(
   if (result.exitCode === EXIT_USAGE) {
     throw new InterlockError('TOOLCHAIN_UNSUPPORTED', 'This git cannot run a speculative merge', {
       details: { exitCode: result.exitCode },
-      remedy: 'Install git 2.40 or later and put it first on PATH.',
+      remedy: 'Install git 2.41 or later and put it first on PATH.',
       infra: true,
     });
   }
@@ -293,9 +300,10 @@ function unparseable(why: string): InterlockError {
  * Read the conflict regions out of the merged tree.
  *
  * Only for paths with a content conflict and not a binary one — git reports a
- * binary file as both — and not for anything whose blob holds a NUL, which is
- * how git decides a file is binary. A region parsed out of a binary file would
- * be invented.
+ * binary file as both. git's classification is the authority rather than a
+ * sniff of the blob: a file marked binary by attribute can be plain text with
+ * no markers in it, and a text file can hold a NUL past the point git looks,
+ * with real markers around it.
  */
 async function readConflictBlocks(
   shadow: ShadowRepo,
@@ -326,7 +334,6 @@ async function readConflictBlocks(
       const [mode, type, oid] = entry.slice(0, tab).split(' ');
       if (tab === -1 || type !== 'blob' || (mode !== '100644' && mode !== '100755')) continue;
       const blob = await runRequired(runner, shadow, ['cat-file', 'blob', oid!]);
-      if (blob.stdout.includes('\0')) continue;
       blocks.push(...parseConflictRegions(entry.slice(tab + 1), blob.stdout));
     }
   }

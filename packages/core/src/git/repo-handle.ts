@@ -79,6 +79,11 @@ const GLOBAL_FLAGS: ReadonlyMap<
   ['--namespace', { takesValue: true, reserved: true }],
   ['--exec-path', { takesValue: true, reserved: true }],
   ['--config-env', { takesValue: true, reserved: true }],
+  // Chooses the tree attributes are read from. Not reserved: it cannot reach
+  // another repository, and every attribute that runs something — a filter, a
+  // custom merge or diff driver — needs a definition in config, which a shadow
+  // does not have and the runner neutralises everywhere else.
+  ['--attr-source', { takesValue: true, reserved: false }],
 ]);
 
 /**

@@ -37,11 +37,11 @@ if command -v git >/dev/null 2>&1; then
   git_version="$(git --version | awk '{print $3}')"
   git_major="${git_version%%.*}"
   git_minor="$(printf '%s' "$git_version" | cut -d. -f2)"
-  # merge-tree --merge-base arrived in 2.40, and every speculative merge uses it.
-  if [ "$git_major" -gt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -ge 40 ]; }; then
+  # Every speculative merge uses merge-tree --merge-base (2.40) and --attr-source (2.41).
+  if [ "$git_major" -gt 2 ] || { [ "$git_major" -eq 2 ] && [ "$git_minor" -ge 41 ]; }; then
     ok "git $git_version"
   else
-    err "git $git_version at $(command -v git) — need >= 2.40; on macOS install one with Homebrew and put it first on PATH"
+    err "git $git_version at $(command -v git) — need >= 2.41; on macOS install one with Homebrew and put it first on PATH"
   fi
 else
   err "git not found"

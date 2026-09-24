@@ -161,9 +161,13 @@ merge-tree` over the two commits reports the conflict — with neither side
   and `binary`, so a region is only parsed for a path that is the first and not
   the second.
 
-  The base is supplied, which needs git 2.40: `--merge-base` arrived there, and
-  2.38–2.39 accept `--write-tree` and refuse the flag, so a check for the
-  subcommand or for `--write-tree` passes on a git that cannot do this. The
+  The base is supplied, which needs git 2.40, and attributes are read from
+  `commitA` with `--attr-source`, which needs 2.41: a bare clone has no
+  worktree to read `.gitattributes` from, and without it `binary`, merge drivers
+  and `conflict-marker-size` are silently ignored — a pair conflicts in the
+  shadow that merges cleanly for real. 2.38 accepts `--write-tree` and refuses
+  both, so a check for the subcommand or for `--write-tree` passes on a git that
+  cannot do this. The
   check is the merge itself — git answers a form it does not understand with
   exit 129, which is `TOOLCHAIN_UNSUPPORTED` — so nothing is paid per pair on a
   git that works. Supplied rather than rediscovered because a Finding names the
