@@ -606,12 +606,14 @@ describe('parseConflictRegions', () => {
   });
 
   it('reads a shorter marker run inside a longer region as content', () => {
-    const text = ['<<<<<<<<<< x', 'o', '>>>>>>> inner', '==========', 't', '>>>>>>>>>> y'].join(
+    // In the section a closer is looked for, so only the length tells the two
+    // apart.
+    const text = ['<<<<<<<<<< x', 'o', '==========', 't', '>>>>>>> inner', '>>>>>>>>>> y'].join(
       '\n',
     );
 
     expect(parseConflictRegions('f', text)).toEqual([
-      { path: 'f', startLine: 1, endLine: 6, ours: 'o\n>>>>>>> inner', theirs: 't', base: null },
+      { path: 'f', startLine: 1, endLine: 6, ours: 'o', theirs: 't\n>>>>>>> inner', base: null },
     ]);
   });
 
