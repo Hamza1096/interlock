@@ -32,7 +32,7 @@ const SHADOWS_DIR = 'shadows';
 const USER_REFS_PREFIX = 'refs/remotes/user/';
 
 /**
- * Identity for commits this clone will author.
+ * Configuration the clone is created with.
  *
  * Set in the repository's own config because it cannot be passed any other way:
  * the runner strips inherited `GIT_*` variables, neutralises global and system
@@ -50,6 +50,11 @@ const SHADOW_CONFIG: readonly (readonly [string, string])[] = [
   // git run against this clone by anyone else.
   ['maintenance.auto', 'false'],
   ['gc.auto', '0'],
+  // A conflict region `merge-tree` writes then carries the base text beside
+  // both sides, which is what tells two additions next to each other from two
+  // edits of the same line. A clone created before this was set writes regions
+  // without it, and they are read as having no base rather than misread.
+  ['merge.conflictStyle', 'diff3'],
 ];
 
 /**
