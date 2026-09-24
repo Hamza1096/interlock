@@ -4,6 +4,17 @@ Short entries: done, decided, blocked. Newest first.
 
 ---
 
+## 2026-09-24 — two reviews of the merge: five taken, one stale, one noted
+
+- **Taken — the base separator's length was not pinned.** The closer's was; the `|` run was only required to be a marker. With `conflict-marker-size` above seven, a line of seven pipes in one side's text would have split the region there. A fixture puts one inside a ten-wide region, and accepting any length now fails it.
+- **Taken — a shadow's config never reached it after creation.** `merge.conflictStyle=diff3` arrived after clones could exist, and a clone passes every usability check without it, so only an unrelated rebuild would have applied it — regions without their base, indefinitely. The config is now brought into line on every refresh: one `config --list` read, and a write only for a key that differs. Pinned both ways: an older clone is corrected, and a clone in order gets one read and no writes. git lists keys in lower case, which a comparison against `conflictStyle` would miss; that mutation is caught too.
+- **Taken, from under a stale headline — a pruned tree was reported as infrastructure.** The review called the alternates chain an outstanding fix; it is not, and was pinned last round. What held: `explainFailure` asked only whether each commit existed, and a snapshot captured into the user's store — which the watcher still does — leaves its commit in the shadow and its tree for the user's `gc`. That commit passed, and the merge came back `MERGE_FAILED`. The probe asks for `^{tree}` now, which needs both; tested with a snapshot whose tree was collected, now `SNAPSHOT_STALE`.
+- **Taken — output cut off after the stages was accepted.** Exit 1, stages, the separator and nothing more parsed as a conflict with no messages. git names every conflict it reports, so a conflicted merge naming none is refused. That check then shadowed four of the malformed-stage fakes, which had no messages either — so they carry a well-formed one now, and the stage checks are what refuse them, as the mutation run confirms.
+- **Taken — a known limit, stated.** Region text is decoded as UTF-8 like everything the runner returns; a file in another encoding keeps exact spans and loses characters. Said on `ConflictBlock`.
+- **Noted, not changed — regions cost one `cat-file` per conflicted file, in sequence.** Measured at about 3 ms each: the 21-file pair was 77 ms. The runner's timeout applies per call, so hundreds of files cost time but cannot time out as one. `cat-file --batch` would make it one process, and needs a stdin path the runner does not have — for the scheduler to ask for if its numbers do.
+- **On the format question:** the `-z` shape is pinned against real git by the rename/rename test, and was identical on 2.39.3 and 2.55.0 when checked by hand.
+- **Mutation: 37, 36 caught.** The survivor is the equivalent `clean` read recorded above.
+
 ## 2026-09-24 — the merge, rebuilt on the same branch
 
 - **The first version's capability probe passed on a git that could not run the merge.** It checked whether `merge-tree --write-tree`'s usage text mentioned `--write-tree` — which Apple's git 2.39.3 does — and then passed `--merge-base`, which 2.39 refuses with exit 129. Every merge on a stock Mac would have reported `MERGE_FAILED`. The check is now the merge itself: 129 is `TOOLCHAIN_UNSUPPORTED`, nothing is paid per pair on a git that works, and it was run against the real 2.39.3 as well as a stub — `TOOLCHAIN_UNSUPPORTED` with its remedy there, a 4 ms merge on 2.55.
