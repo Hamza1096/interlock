@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createGitRunner } from '../src/git/repo-handle.js';
 import type { GitResult, GitRunner, ShadowRepo, UserRepo } from '../src/git/repo-handle.js';
 import { ensureShadow } from '../src/git/shadow.js';
+import { captureDirtyState, commitSnapshotInShadow } from '../src/git/worktree.js';
 import { parseConflictRegions, speculativeMerge } from '../src/merge/speculative-merge.js';
 import type { SpeculativeMergeRequest } from '../src/merge/speculative-merge.js';
 import { rejection } from './support/rejection.js';
@@ -464,6 +465,24 @@ describe('speculativeMerge', () => {
       expect(error.details.field).toBe('commitB');
     });
 
+    it('is a stale snapshot when a commit is there and its tree has been collected', async () => {
+      // A snapshot captured into the user's store rather than the shadow: its
+      // commit lives in the shadow, its tree where the user's `gc` reaps it.
+      const valid = await request();
+      write('a.txt', 'uncommitted\n');
+      const repo: UserRepo = { kind: 'user', rootPath: dir, gitDir: join(dir, '.git') };
+      const snapshot = await captureDirtyState(dir, repo, { runner });
+      const { commitSha } = await commitSnapshotInShadow(shadow, snapshot, { runner });
+      git('checkout', '--', 'a.txt');
+      git('reflog', 'expire', '--expire=now', '--all');
+      git('gc', '-q', '--prune=now');
+
+      const error = await rejection(speculativeMerge({ ...valid, commitA: commitSha }, { runner }));
+
+      expect(error.code).toBe('SNAPSHOT_STALE');
+      expect(error.details.field).toBe('commitA');
+    });
+
     it('reports a git too old for this merge as unsupported, not as a failed merge', async () => {
       const valid = await request();
 
@@ -540,6 +559,8 @@ describe('speculativeMerge', () => {
         { exitCode: 1, stdout: `${tree}` },
         { exitCode: 0, stdout: `${tree}\0${stage}\0\0` },
         { exitCode: 1, stdout: `${tree}\0` },
+        // Stages and the separator, then nothing: cut off before any message.
+        { exitCode: 1, stdout: `${tree}\0${stage}\0\0` },
       ];
       for (const fake of unreadable) {
         const error = await rejection(speculativeMerge(valid, { runner: answering(fake) }));
@@ -614,6 +635,32 @@ describe('parseConflictRegions', () => {
 
     expect(parseConflictRegions('f', text)).toEqual([
       { path: 'f', startLine: 1, endLine: 6, ours: 'o', theirs: 't\n>>>>>>> inner', base: null },
+    ]);
+  });
+
+  it('reads a shorter pipe run inside a longer region as content, not as the base', () => {
+    // With `conflict-marker-size` above seven, a line of seven pipes in one
+    // side's own text would otherwise split the region at the wrong place.
+    const text = [
+      '<<<<<<<<<< x',
+      'o',
+      '||||||| not the base',
+      '|||||||||| b',
+      'base',
+      '==========',
+      't',
+      '>>>>>>>>>> y',
+    ].join('\n');
+
+    expect(parseConflictRegions('f', text)).toEqual([
+      {
+        path: 'f',
+        startLine: 1,
+        endLine: 8,
+        ours: 'o\n||||||| not the base',
+        theirs: 't',
+        base: 'base',
+      },
     ]);
   });
 

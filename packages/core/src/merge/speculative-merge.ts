@@ -85,7 +85,11 @@ export interface MergeMessage {
  * One conflict region in a merged file.
  *
  * Lines are 1-based within the merged file and span the markers. `base` is
- * null where the shadow was created before it wrote regions with their base.
+ * null for a region written without one, in git's default conflict style.
+ *
+ * The text is decoded as UTF-8, as everything the runner returns is: a file in
+ * another encoding keeps exact line spans but shows replacement characters in
+ * its content.
  */
 export interface ConflictBlock {
   readonly path: string;
@@ -177,6 +181,11 @@ export async function speculativeMerge(
   if (clean !== (output.stages.length === 0)) {
     throw unparseable('the exit status and the conflicted files disagree');
   }
+  // git names every conflict it reports, so a conflicted merge whose messages
+  // stop short of any is output cut off after the stages.
+  if (!clean && !output.messages.some((message) => message.type.startsWith('CONFLICT'))) {
+    throw unparseable('a conflicted merge names no conflict');
+  }
 
   const conflictBlocks = clean
     ? []
@@ -212,7 +221,9 @@ async function explainFailure(
     ['mergeBaseSha', request.mergeBaseSha],
   ] as const;
   for (const [field, oid] of commits) {
-    const found = await runner.run(shadow, ['cat-file', '-e', `${oid}^{commit}`]);
+    // The tree as well as the commit: a snapshot captured into the user's store
+    // leaves its commit in the shadow and its tree where their `gc` reaps it.
+    const found = await runner.run(shadow, ['cat-file', '-e', `${oid}^{tree}`]);
     if (found.exitCode !== 0) {
       return new InterlockError('SNAPSHOT_STALE', `The merge's ${field} is not in the shadow`, {
         details: { field },
