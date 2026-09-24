@@ -132,34 +132,37 @@ test('speculativeMerge returns conflicted paths and stages on conflict', async (
   expect(result.conflictedStages[0]!.path).toBe('a.txt');
 });
 
-test.skipIf(process.platform === 'win32')('speculativeMerge handles newlines in paths', async () => {
-  const { shadow, git } = createTestRepo();
+test.skipIf(process.platform === 'win32')(
+  'speculativeMerge handles newlines in paths',
+  async () => {
+    const { shadow, git } = createTestRepo();
 
-  const pathWithNewline = 'file\nname.txt';
-  writeFileSync(join(shadow.originPath, pathWithNewline), 'base\n');
-  git('add', pathWithNewline);
-  git('commit', '-qm', 'base');
-  const baseCommit = git('rev-parse', 'HEAD');
+    const pathWithNewline = 'file\nname.txt';
+    writeFileSync(join(shadow.originPath, pathWithNewline), 'base\n');
+    git('add', pathWithNewline);
+    git('commit', '-qm', 'base');
+    const baseCommit = git('rev-parse', 'HEAD');
 
-  git('checkout', '-qb', 'b1');
-  writeFileSync(join(shadow.originPath, pathWithNewline), 'b1\n');
-  git('commit', '-am', 'b1');
-  const commitA = git('rev-parse', 'HEAD');
+    git('checkout', '-qb', 'b1');
+    writeFileSync(join(shadow.originPath, pathWithNewline), 'b1\n');
+    git('commit', '-am', 'b1');
+    const commitA = git('rev-parse', 'HEAD');
 
-  git('checkout', '-q', 'main');
-  git('checkout', '-qb', 'b2');
-  writeFileSync(join(shadow.originPath, pathWithNewline), 'b2\n');
-  git('commit', '-am', 'b2');
-  const commitB = git('rev-parse', 'HEAD');
+    git('checkout', '-q', 'main');
+    git('checkout', '-qb', 'b2');
+    writeFileSync(join(shadow.originPath, pathWithNewline), 'b2\n');
+    git('commit', '-am', 'b2');
+    const commitB = git('rev-parse', 'HEAD');
 
-  const result = await speculativeMerge({
-    shadow,
-    commitA,
-    commitB,
-    mergeBaseSha: baseCommit,
-    runner,
-  });
+    const result = await speculativeMerge({
+      shadow,
+      commitA,
+      commitB,
+      mergeBaseSha: baseCommit,
+      runner,
+    });
 
-  expect(result.clean).toBe(false);
-  expect(result.conflictedPaths).toEqual([pathWithNewline]);
-});
+    expect(result.clean).toBe(false);
+    expect(result.conflictedPaths).toEqual([pathWithNewline]);
+  },
+);

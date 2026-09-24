@@ -150,7 +150,6 @@ describe('user repositories are never modified', () => {
         await extractChangeSet(handle, branch, mergeBaseSha, { runner, snapshot });
       }
 
-      const shadow = await ensureShadow(handle, { runner, dataDir, repoId: repo.id });
       await speculativeMerge({
         shadow,
         commitA: branch.headSha,
