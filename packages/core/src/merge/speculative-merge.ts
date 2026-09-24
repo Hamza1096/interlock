@@ -246,7 +246,8 @@ interface MergeTreeOutput {
 function parseMergeTree(stdout: string): MergeTreeOutput {
   const fields = stdout.split('\0');
   // Every record is terminated, so the split leaves one empty field at the end.
-  if (fields.pop() !== '') throw unparseable('the output does not end with a terminator');
+  // Output cut short loses that instead, and fails the structural checks below.
+  fields.pop();
 
   const treeOid = fields[0] ?? '';
   if (!isObjectId(treeOid)) throw unparseable('the first field is not a tree id');

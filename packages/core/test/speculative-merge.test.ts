@@ -307,6 +307,60 @@ describe('speculativeMerge', () => {
       expect(result.conflictBlocks).toEqual([]);
     });
 
+    it('reads the attributes commitA has, not the ones commitB has', async () => {
+      // Only A marks the file binary. A `git merge` run on A's checkout reads
+      // A's attributes, and so does this; read from B, the file would merge as
+      // text and a region would be read from it.
+      const request = await pair(
+        () => write('table.dat', 'base\n'),
+        () => {
+          write('.gitattributes', '*.dat binary\n');
+          write('table.dat', 'one\n');
+        },
+        () => write('table.dat', 'two\n'),
+      );
+
+      const result = await speculativeMerge(request, { runner });
+
+      expect(result.messages.map((m) => m.type)).toContain('CONFLICT (binary)');
+      expect(result.conflictBlocks).toEqual([]);
+    });
+
+    it('invents no region from marker-like text in a file git did not merge as text', async () => {
+      // git keeps one side of a binary file whole and writes no markers, so any
+      // marker-shaped lines in the result are that side's own content.
+      const lookalike = '<<<<<<< not\nours\n=======\ntheirs\n>>>>>>> real\n';
+      const request = await pair(
+        () => {
+          write('.gitattributes', '*.dat binary\n');
+          write('table.dat', 'base\n');
+        },
+        () => write('table.dat', lookalike),
+        () => write('table.dat', 'two\n'),
+      );
+
+      const result = await speculativeMerge(request, { runner });
+
+      expect(blobIn(result.treeOid, 'table.dat')).toBe(lookalike);
+      expect(result.conflictBlocks).toEqual([]);
+    });
+
+    it('reads no region from a file whose conflict is not about its contents', async () => {
+      // Deleted on one side and edited on the other: the kept file is one
+      // side's text, not a merge of two, whatever it happens to contain.
+      const lookalike = '<<<<<<< not\nours\n=======\ntheirs\n>>>>>>> real\n';
+      const request = await pair(
+        () => write('kept.txt', 'base\n'),
+        () => write('kept.txt', lookalike),
+        () => rmSync(join(dir, 'kept.txt')),
+      );
+
+      const result = await speculativeMerge(request, { runner });
+
+      expect(result.messages.map((m) => m.type)).toContain('CONFLICT (modify/delete)');
+      expect(result.conflictBlocks).toEqual([]);
+    });
+
     it('reports a file against a symlink, moved aside under a name neither branch has', async () => {
       const request = await pair(
         () => write('f', 'file\n'),
@@ -467,14 +521,24 @@ describe('speculativeMerge', () => {
       const valid = await request();
       const tree = gitIn(dir, 'rev-parse', 'HEAD^{tree}').trim();
 
+      const stage = `100644 ${tree} 1\tx`;
       const unreadable = [
+        // A clean exit with no tree to report.
+        { exitCode: 0, stdout: 'not a tree\0' },
         { exitCode: 1, stdout: 'not a tree\0' },
-        { exitCode: 1, stdout: `${tree}\0garbage record\0\0` },
-        { exitCode: 1, stdout: `${tree}\0\0zero\0CONFLICT (contents)\0x\0` },
-        { exitCode: 1, stdout: `${tree}\0\x002\0only-one-path\0` },
+        // Records that reach the stage parser and are not stages.
+        { exitCode: 1, stdout: `${tree}\x00garbage record\0\0` },
+        { exitCode: 1, stdout: `${tree}\x00100644 notanoid 1\tx\0\0` },
+        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 1 extra\tx\0\0` },
+        { exitCode: 1, stdout: `${tree}\x00644 ${tree} 1\tx\0\0` },
+        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 4\tx\0\0` },
+        // Messages after a valid stage, so only the message checks can refuse.
+        { exitCode: 1, stdout: `${tree}\0${stage}\0\0zero\0CONFLICT (contents)\0x\0` },
+        { exitCode: 1, stdout: `${tree}\0${stage}\0\x000\0CONFLICT (contents)\0x\0` },
+        { exitCode: 1, stdout: `${tree}\0${stage}\0\x002\0only-one-path\0` },
+        // Cut short, and the two ways exit status and output can disagree.
         { exitCode: 1, stdout: `${tree}` },
-        // A clean exit listing a conflict, and a conflicted one listing none.
-        { exitCode: 0, stdout: `${tree}\x00100644 ${tree} 1\tx\0\0` },
+        { exitCode: 0, stdout: `${tree}\0${stage}\0\0` },
         { exitCode: 1, stdout: `${tree}\0` },
       ];
       for (const fake of unreadable) {
@@ -537,6 +601,43 @@ describe('parseConflictRegions', () => {
 
   it('does not read content that merely starts like a marker as one', () => {
     const text = ['<<<<<<<x not a marker', '<<<<<< six', 'plain'].join('\n');
+
+    expect(parseConflictRegions('f', text)).toEqual([]);
+  });
+
+  it('reads a shorter marker run inside a longer region as content', () => {
+    const text = ['<<<<<<<<<< x', 'o', '>>>>>>> inner', '==========', 't', '>>>>>>>>>> y'].join(
+      '\n',
+    );
+
+    expect(parseConflictRegions('f', text)).toEqual([
+      { path: 'f', startLine: 1, endLine: 6, ours: 'o\n>>>>>>> inner', theirs: 't', base: null },
+    ]);
+  });
+
+  it('does not open a region on a run with no space before its label', () => {
+    const text = ['<<<<<<<x', 'o', '=======', 't', '>>>>>>> y'].join('\n');
+
+    expect(parseConflictRegions('f', text)).toEqual([]);
+  });
+
+  it('does not read runs shorter than seven as markers, however well-formed', () => {
+    const text = ['<<<<<< a', 'o', '======', 't', '>>>>>> b'].join('\n');
+
+    expect(parseConflictRegions('f', text)).toEqual([]);
+  });
+
+  it('reads nothing after a region that never closes, even a region of another size', () => {
+    // Whatever follows an unclosed marker is not text this can vouch for.
+    const text = [
+      '<<<<<<< x',
+      'dangling',
+      '<<<<<<<<<< a',
+      'o',
+      '==========',
+      't',
+      '>>>>>>>>>> b',
+    ].join('\n');
 
     expect(parseConflictRegions('f', text)).toEqual([]);
   });
