@@ -1,14 +1,7 @@
 import { notImplemented } from '@interlock/shared';
 import type { BranchRefId, Finding, SpeculativeRunId } from '@interlock/shared';
-/** One `<<<<<<< / ======= / >>>>>>>` region produced by git. */
-export interface ConflictBlock {
-  readonly path: string;
-  readonly startLine: number;
-  readonly endLine: number;
-  readonly ours: string;
-  readonly theirs: string;
-  readonly base: string | null;
-}
+import type { ConflictBlock } from './speculative-merge.js';
+
 /**
  * Turns raw git conflict regions into Findings with evidence.
  *
