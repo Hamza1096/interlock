@@ -541,16 +541,18 @@ describe('speculativeMerge', () => {
       const tree = gitIn(dir, 'rev-parse', 'HEAD^{tree}').trim();
 
       const stage = `100644 ${tree} 1\tx`;
+      const named = '1\0x\0CONFLICT (contents)\0CONFLICT (content): x\0';
       const unreadable = [
         // A clean exit with no tree to report.
         { exitCode: 0, stdout: 'not a tree\0' },
         { exitCode: 1, stdout: 'not a tree\0' },
-        // Records that reach the stage parser and are not stages.
-        { exitCode: 1, stdout: `${tree}\x00garbage record\0\0` },
-        { exitCode: 1, stdout: `${tree}\x00100644 notanoid 1\tx\0\0` },
-        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 1 extra\tx\0\0` },
-        { exitCode: 1, stdout: `${tree}\x00644 ${tree} 1\tx\0\0` },
-        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 4\tx\0\0` },
+        // Records that reach the stage parser and are not stages, each followed
+        // by a message that is fine, so the stage check is the one refusing.
+        { exitCode: 1, stdout: `${tree}\x00garbage record\0\0${named}` },
+        { exitCode: 1, stdout: `${tree}\x00100644 notanoid 1\tx\0\0${named}` },
+        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 1 extra\tx\0\0${named}` },
+        { exitCode: 1, stdout: `${tree}\x00644 ${tree} 1\tx\0\0${named}` },
+        { exitCode: 1, stdout: `${tree}\x00100644 ${tree} 4\tx\0\0${named}` },
         // Messages after a valid stage, so only the message checks can refuse.
         { exitCode: 1, stdout: `${tree}\0${stage}\0\0zero\0CONFLICT (contents)\0x\0` },
         { exitCode: 1, stdout: `${tree}\0${stage}\0\x000\0CONFLICT (contents)\0x\0` },
