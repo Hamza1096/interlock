@@ -147,7 +147,7 @@ function run(mergePairId: MergePairId, overrides: Partial<SpeculativeRun> = {}):
     snapshotA: ulid<SnapshotId>(),
     snapshotB: ulid<SnapshotId>(),
     status: 'complete',
-    mergeOutcome: { clean: false, conflictedPaths: ['src/a.ts'], mergedTreeOid: null },
+    mergeOutcome: { clean: false, conflictedPaths: ['src/a.ts'], mergedSha: null },
     analyzerResults: [
       {
         analyzer: 'textual',
