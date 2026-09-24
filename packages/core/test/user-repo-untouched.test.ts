@@ -101,6 +101,7 @@ describe('user repositories are never modified', () => {
 
     for (const branch of branches) {
       let snapshot: { id: SnapshotId; treeOid: string } | undefined;
+      let snapshotCommit: string | undefined;
       if (branch.worktreePath !== null && branch.dirty !== null) {
         const whole = await captureDirtyState(branch.worktreePath, handle, { runner });
         const paths = [
@@ -122,7 +123,7 @@ describe('user repositories are never modified', () => {
           objectStore: shadow,
         });
         expect(intoShadow.treeOid).toBe(whole.treeOid);
-        await commitSnapshotInShadow(shadow, intoShadow, { runner });
+        snapshotCommit = (await commitSnapshotInShadow(shadow, intoShadow, { runner })).commitSha;
 
         snapshot = { id: ulid<SnapshotId>(), treeOid: whole.treeOid };
       }
@@ -150,13 +151,25 @@ describe('user repositories are never modified', () => {
         await extractChangeSet(handle, branch, mergeBaseSha, { runner, snapshot });
       }
 
-      await speculativeMerge({
-        shadow,
-        commitA: branch.headSha,
-        commitB: mergeBaseSha,
-        mergeBaseSha,
-        runner,
-      });
+      // The pair a scheduler merges: this branch — its uncommitted work, where
+      // it has any — against the branch it will land on. The merged tree is
+      // written into the shadow; the hasher below is what shows nothing lands
+      // here.
+      const target = await runner.run(handle, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        `${repo.defaultBranch}^{commit}`,
+      ]);
+      await speculativeMerge(
+        {
+          shadow,
+          commitA: snapshotCommit ?? branch.headSha,
+          commitB: target.stdout.trim(),
+          mergeBaseSha,
+        },
+        { runner },
+      );
 
       diffed += 1;
     }
